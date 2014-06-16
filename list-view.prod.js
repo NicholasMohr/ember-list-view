@@ -1,4 +1,4 @@
-// Last commit: a6a4250 (2014-02-24 20:10:26 -0600)
+// Last commit: a56fcf9 (2014-06-12 18:59:24 -0400)
 
 
 // ==========================================================================
@@ -90,7 +90,7 @@ function rerender() {
   context = get(this, 'context');
 
   // releases action helpers in contents
-  // this means though that the ListViewItem itself can't use classBindings or attributeBindings
+  // this means though that the ListItemView itself can't use classBindings or attributeBindings
   // need support for rerender contents in ember
   this.triggerRecursively('willClearRender');
 
@@ -125,7 +125,7 @@ function rerender() {
 }
 
 /**
-  The `Ember.ListViewItem` view class renders a
+  The `Ember.ListItemView` view class renders a
   [div](https://developer.mozilla.org/en/HTML/Element/div) HTML element
   with `ember-list-item-view` class. It allows you to specify a custom item
   handlebars template for `Ember.ListView`.
@@ -184,9 +184,13 @@ Ember.ReusableListItemView = Ember.View.extend(Ember.ListItemViewMixin, {
     return !!this.get('context.content');
   }),
   updateContext: function(newContext){
-    var context = get(this._proxyContext, 'content');
+    var context = get(this._proxyContext, 'content'), state;
+
+    // Support old and new Ember versions
+    state = this._state || this.state;
+
     if (context !== newContext) {
-      if (this.state === 'inDOM') {
+      if (state === 'inDOM') {
         this.prepareForReuse(newContext);
       }
 
@@ -293,6 +297,32 @@ function notifyMutationListeners() {
   if (Ember.View.notifyMutationListeners) {
     Ember.run.once(Ember.View, 'notifyMutationListeners');
   }
+}
+
+function removeEmptyView() {
+  var emptyView = get(this, 'emptyView');
+  if (emptyView && emptyView instanceof Ember.View) {
+    emptyView.removeFromParent();
+  }
+}
+
+function addEmptyView() {
+  var emptyView = get(this, 'emptyView');
+
+  if (!emptyView) { return; }
+
+  if ('string' === typeof emptyView) {
+    emptyView = get(emptyView) || emptyView;
+  }
+
+  emptyView = this.createChildView(emptyView);
+  set(this, 'emptyView', emptyView);
+
+  if (Ember.CoreView.detect(emptyView)) {
+    this._createdEmptyView = emptyView;
+  }
+
+  this.unshiftObject(emptyView);
 }
 
 var domManager = Ember.create(Ember.ContainerView.proto().domManager);
@@ -664,6 +694,20 @@ Ember.ListViewMixin = Ember.Mixin.create({
   /**
     @private
 
+    Determines whether the emptyView is the current childView.
+
+    @method _isChildEmptyView
+  */
+  _isChildEmptyView: function() {
+    var emptyView = get(this, 'emptyView');
+
+    return emptyView && emptyView instanceof Ember.View &&
+           this._childViews.length === 1 && this._childViews.indexOf(emptyView) === 0;
+  },
+
+  /**
+    @private
+
     Computes the number of views that would fit in the viewport area.
     You must specify `height` and `rowHeight` parameters for the number of
     views to be computed properly.
@@ -767,16 +811,24 @@ Ember.ListViewMixin = Ember.Mixin.create({
     @method _syncChildViews
    **/
   _syncChildViews: function(){
-    var itemViewClass, startingIndex, childViewCount,
-        endingIndex, numberOfChildViews, numberOfChildViewsNeeded,
-        childViews, count, delta, index, childViewsLength, contentIndex;
+    var childViews, childViewCount,
+        numberOfChildViews, numberOfChildViewsNeeded,
+        contentIndex, startingIndex, endingIndex,
+        contentLength, emptyView, count, delta;
 
     if (get(this, 'isDestroyed') || get(this, 'isDestroying')) {
       return;
     }
 
+    contentLength = get(this, 'content.length');
+    emptyView = get(this, 'emptyView');
+
     childViewCount = this._childViewCount();
     childViews = this.positionOrderedChildViews();
+
+    if (this._isChildEmptyView()) {
+      removeEmptyView.call(this);
+    }
 
     startingIndex = this._startingIndex();
     endingIndex = startingIndex + childViewCount;
@@ -795,7 +847,6 @@ Ember.ListViewMixin = Ember.Mixin.create({
       for (count = 0; count < delta; count++, contentIndex++) {
         this._addItemView(contentIndex);
       }
-
     } else {
       // less views are needed
       forEach.call(
@@ -809,6 +860,10 @@ Ember.ListViewMixin = Ember.Mixin.create({
 
     this._lastStartingIndex = startingIndex;
     this._lastEndingIndex   = this._lastEndingIndex + delta;
+
+    if (contentLength === 0 || contentLength === undefined) {
+      addEmptyView.call(this);
+    }
   },
 
   /**
@@ -884,9 +939,14 @@ Ember.ListViewMixin = Ember.Mixin.create({
   */
   // TODO: refactor
   arrayDidChange: function(content, start, removedCount, addedCount) {
-    var index, contentIndex;
+    var index, contentIndex, state;
 
-    if (this.state === 'inDOM') {
+    removeEmptyView.call(this);
+
+    // Support old and new Ember versions
+    state = this._state || this.state;
+
+    if (state === 'inDOM') {
       // ignore if all changes are out of the visible change
       if( start >= this._lastStartingIndex || start < this._lastEndingIndex) {
         index = 0;
@@ -905,6 +965,16 @@ Ember.ListViewMixin = Ember.Mixin.create({
 
       syncChildViews.call(this);
     }
+  },
+
+  destroy: function () {
+    if (!this._super()) { return; }
+
+    if (this._createdEmptyView) {
+      this._createdEmptyView.destroy();
+    }
+
+    return this;
   }
 });
 
@@ -1013,7 +1083,7 @@ var get = Ember.get, set = Ember.set;
 Ember.ListView = Ember.ContainerView.extend(Ember.ListViewMixin, {
   css: {
     position: 'relative',
-    overflow: 'scroll',
+    overflow: 'auto',
     '-webkit-overflow-scrolling': 'touch',
     'overflow-scrolling': 'touch'
   },
@@ -1060,9 +1130,21 @@ Ember.ListView = Ember.ContainerView.extend(Ember.ListViewMixin, {
   }, 'totalHeight'),
 
   _updateScrollableHeight: function () {
-    if (this.state === 'inDOM') {
+    var height, state;
+
+    // Support old and new Ember versions
+    state = this._state || this.state;
+
+    if (state === 'inDOM') {
+      // if the list is currently displaying the emptyView, remove the height
+      if (this._isChildEmptyView()) {
+          height = '';
+      } else {
+          height = get(this, 'totalHeight');
+      }
+
       this.$('.ember-list-container').css({
-        height: get(this, 'totalHeight')
+        height: height
       });
     }
   }
@@ -1180,13 +1262,14 @@ Ember.VirtualListScrollerEvents = Ember.Mixin.create({
     };
     return this._super();
   },
+  scrollElement: Ember.computed.oneWay('element').readOnly(),
   bindScrollerEvents: function() {
-    var el = this.get('element'),
+    var el = this.get('scrollElement'),
       handlers = this.scrollerEventHandlers;
     bindElement(el, handlers);
   },
   unbindScrollerEvents: function() {
-    var el = this.get('element'),
+    var el = this.get('scrollElement'),
       handlers = this.scrollerEventHandlers;
     unbindElement(el, handlers);
     unbindWindow(handlers);
@@ -1259,7 +1342,10 @@ Ember.VirtualListView = Ember.ContainerView.extend(Ember.ListViewMixin, Ember.Vi
     view = this;
 
     view.scroller = new Scroller(function(left, top, zoom) {
-      if (view.state !== 'inDOM') { return; }
+      // Support old and new Ember versions
+      var state = view._state || view.state;
+
+      if (state !== 'inDOM') { return; }
 
       if (view.listContainerElement) {
         view._scrollerTop = top;
@@ -1390,6 +1476,7 @@ Ember.VirtualListView = Ember.ContainerView.extend(Ember.ListViewMixin, Ember.Vi
 
     if ((candidatePosition >= 0) && (candidatePosition <= this.scroller.__maxScrollTop)) {
       this.scroller.scrollBy(0, delta, true);
+      e.stopPropagation();
     }
 
     return false;
